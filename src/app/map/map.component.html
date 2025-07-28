@@ -1,4 +1,6 @@
 <div class="map-container">
+  <app-loading *ngIf="isLoading" mensagem="Buscando localizações..."></app-loading>
+  <ion-searchbar class="map-searchbar custom" placeholder="Buscar linha" (ionChange)="onBuscarLinha($event)" (ionClear)="onLimparBusca()"></ion-searchbar>
   <div class="map-frame">
     <div id="map"></div>
   </div>
