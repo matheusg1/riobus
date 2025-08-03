@@ -1,25 +1,11 @@
 import { AfterViewInit, Component, OnDestroy, OnInit } from '@angular/core';
 import * as L from 'leaflet';
-import 'leaflet-rotatedmarker';
 import { GpsService } from '../services/gps/gps.service';
 import { IonSearchbar } from '@ionic/angular/standalone';
 import { Localizacao } from '../models/localizacao.model';
 import { LoadingComponent } from '../loading/loading.component';
 import { CommonModule } from '@angular/common';
-import { interval, Subscription } from 'rxjs';
-
-// Tipagens adicionais para o plugin leaflet-rotatedmarker
-declare module 'leaflet' {
-  interface MarkerOptions {
-    rotationAngle?: number;
-    rotationOrigin?: string;
-  }
-
-  interface Marker {
-    setRotationAngle(angle: number): this;
-    setRotationOrigin(origin: string): this;
-  }
-}
+import { interval, startWith, Subscription, switchMap } from 'rxjs';
 
 @Component({
   selector: 'app-leaflet-map',
@@ -28,10 +14,13 @@ declare module 'leaflet' {
   standalone: true,
   imports: [IonSearchbar, LoadingComponent, CommonModule]
 })
+
 export class MapComponent implements AfterViewInit, OnInit, OnDestroy {
   private mapa!: L.Map;
   private marcadores: Map<string, L.Marker> = new Map();
   private ultimasPosicoes: Map<string, L.LatLng> = new Map();
+  private ultimasAtualizacoes: Map<string, number> = new Map();
+
 
   private todasLocalizacoes: Localizacao[] = [];
   private localizacoesFiltradas: Localizacao[] = [];
@@ -50,23 +39,6 @@ export class MapComponent implements AfterViewInit, OnInit, OnDestroy {
     iconSize: [38, 38],
     popupAnchor: [0, -10]
   });
-  private criarIconeGota(): L.DivIcon {
-    const svg = `
-        <svg width="40px" height="40px" viewBox="0 0 16 16" version="1.1" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="#FFC828">
-        <rect width="16" height="16" id="icon-bound" fill="none"></rect>
-        <path d="M8,0C4.688,0,2,2.688,2,6c0,6,6,10,6,10s6-4,6-10C14,2.688,11.312,0,8,0z M8,8C6.344,8,5,6.656,5,5s1.344-3,3-3s3,1.344,3,3 S9.656,8,8,8z"></path>
-      </svg>
-    `;
-
-    return L.divIcon({
-      className: '',
-      html: svg,
-      iconSize: [40, 40],
-      iconAnchor: [20, 20],
-      popupAnchor: [0, -20]
-    });
-  }
-
 
   constructor(private gpsService: GpsService) { }
 
@@ -76,6 +48,7 @@ export class MapComponent implements AfterViewInit, OnInit, OnDestroy {
 
   ngAfterViewInit(): void {
     this.inicializarMapa();
+    this.mostrarLocalizacaoAtual()
   }
 
   ngOnDestroy(): void {
@@ -89,41 +62,75 @@ export class MapComponent implements AfterViewInit, OnInit, OnDestroy {
 
     L.tileLayer(this.URL_TILES, {
       maxZoom: 19,
-      attribution: '© OpenStreetMap contributors'
+      attribution: '© OpenStreetMap contributors',
     }).addTo(this.mapa);
 
+    this.mapa.attributionControl.setPrefix('');
     setTimeout(() => this.mapa.invalidateSize(), 200);
   }
 
-  private iniciarAtualizacaoPeriodica(): void {
-    this.buscarLocalizacoes();
+   private iniciarAtualizacaoPeriodica(): void {
+    this.assinaturaAtualizacao = interval(this.INTERVALO_ATUALIZACAO_MS)
+      .pipe(
+        startWith(0),
+        switchMap(() => this.gpsService.getLocalizacoesOnibus(30))
+      )
+      .subscribe({
+        next: (dados) => {
+          this.todasLocalizacoes = dados;
+          this.isLoading = false;
 
-    this.assinaturaAtualizacao = interval(this.INTERVALO_ATUALIZACAO_MS).subscribe(() => {
-      this.buscarLocalizacoes();
-    });
+          if (this.linhaBuscada) {
+            this.localizacoesFiltradas = this.filtrarPorLinha(this.todasLocalizacoes, this.linhaBuscada);
+            this.atualizarMarcadores(this.localizacoesFiltradas);
+          }
+        },
+        error: (erro) => {
+          console.error('Erro ao buscar dados de GPS:', erro);
+        }
+      });
   }
 
-  private buscarLocalizacoes(): void {
-    this.gpsService.getLocalizacoesOnibus(50).subscribe({
-      next: (dados) => {
-        this.todasLocalizacoes = dados;
-        this.isLoading = false;
-        console.log('Localizações atualizadas:', dados);
+  mostrarLocalizacaoAtual() {
+    if (!this.mapa) return;
 
-        if (this.linhaBuscada) {
-          this.localizacoesFiltradas = this.filtrarPorLinha(this.todasLocalizacoes, this.linhaBuscada);
-          this.atualizarMarcadores(this.localizacoesFiltradas);
-        }
-      },
-      error: (erro) => {
-        console.error('Erro ao buscar dados de GPS:', erro);
+    this.mapa.locate();
+
+    const baseRadius = 1000;
+    let userCircle: L.Circle | null = null;
+
+    const updateCircleRadius = () => {
+      if (!userCircle) return;
+
+      const zoom = this.mapa.getZoom();
+      const dynamicRadius = baseRadius * Math.pow(2, (10 - zoom));
+      userCircle.setRadius(dynamicRadius);
+    };
+
+    this.mapa.on('locationfound', (e: L.LocationEvent) => {
+      if (userCircle) {
+        this.mapa.removeLayer(userCircle);
       }
+
+      userCircle = L.circle(e.latlng, {
+        radius: baseRadius,
+        color: 'white',
+        fillColor: '#1052FC',
+        fillOpacity: 1
+      }).addTo(this.mapa);
+
+      updateCircleRadius();
+    });
+
+    this.mapa.on('zoomend', () => {
+      updateCircleRadius();
     });
   }
 
   onBuscarLinha(evento: any): void {
     const valorBusca = evento.detail.value?.trim();
     this.linhaBuscada = valorBusca || '';
+    console.log('buscar linha ' + valorBusca)
 
     if (!this.linhaBuscada) {
       this.localizacoesFiltradas = [];
@@ -133,7 +140,8 @@ export class MapComponent implements AfterViewInit, OnInit, OnDestroy {
 
     this.localizacoesFiltradas = this.filtrarPorLinha(this.todasLocalizacoes, this.linhaBuscada);
     this.atualizarMarcadores(this.localizacoesFiltradas);
-    this.mapa.setZoom(12);
+    this.mapa.zoomOut();
+    console.log('qtd localizacoes filtradas ' + this.localizacoesFiltradas.length)
   }
 
   onLimparBusca() {
@@ -160,25 +168,22 @@ export class MapComponent implements AfterViewInit, OnInit, OnDestroy {
 
       ordensAtuais.add(ordem);
 
-      const direcao = this.calcularDirecao(ordem, posicaoAtual);
-
       const marcadorExistente = this.marcadores.get(ordem);
 
       if (marcadorExistente) {
         marcadorExistente.setLatLng(posicaoAtual);
         marcadorExistente.setPopupContent(this.gerarPopup(loc));
-        marcadorExistente.setRotationAngle(direcao);
       } else {
         const marcador = L.marker(posicaoAtual, {
-          icon: this.criarIconeGota(),
-          rotationAngle: direcao,
-          rotationOrigin: 'center center'
+          icon: this.iconeOnibus,
         }).addTo(this.mapa).bindPopup(this.gerarPopup(loc));
 
         this.marcadores.set(ordem, marcador);
       }
 
       this.ultimasPosicoes.set(ordem, posicaoAtual);
+      this.ultimasAtualizacoes.set(ordem, Date.now());
+
     });
 
     this.removerMarcadoresAntigos(ordensAtuais);
@@ -193,26 +198,19 @@ export class MapComponent implements AfterViewInit, OnInit, OnDestroy {
   }
 
   private removerMarcadoresAntigos(ordensAtuais: Set<string>): void {
+    const LIMITE_MS = 2 * 60 * 1000; // 2 minutos
+    const agora = Date.now();
+
     this.marcadores.forEach((marcador, ordem) => {
-      if (!ordensAtuais.has(ordem)) {
+      const ultimaAtualizacao = this.ultimasAtualizacoes.get(ordem);
+
+      if (!ultimaAtualizacao || (agora - ultimaAtualizacao > LIMITE_MS)) {
         this.mapa.removeLayer(marcador);
         this.marcadores.delete(ordem);
         this.ultimasPosicoes.delete(ordem);
+        this.ultimasAtualizacoes.delete(ordem);
       }
     });
-  }
-
-  private calcularDirecao(ordem: string, posicaoAtual: L.LatLng): number {
-    const posicaoAnterior = this.ultimasPosicoes.get(ordem);
-
-    if (!posicaoAnterior) return 0;
-
-    const deltaX = posicaoAtual.lng - posicaoAnterior.lng;
-    const deltaY = posicaoAtual.lat - posicaoAnterior.lat;
-    const anguloRad = Math.atan2(deltaX, deltaY);
-    const anguloGraus = (anguloRad * 180) / Math.PI;
-
-    return (anguloGraus + 360) % 360; // normaliza para 0–360
   }
 
   private removerTodosMarcadores(): void {
@@ -224,24 +222,11 @@ export class MapComponent implements AfterViewInit, OnInit, OnDestroy {
   }
 
   private gerarPopup(loc: Localizacao): string {
-    return `
-      <div>
+    return `<div>
         <strong>Número:</strong> ${loc.ordem}<br>
         <strong>Linha:</strong> ${loc.linha}<br>
         <strong>Velocidade:</strong> ${loc.velocidade} km/h<br>
-      </div>
-    `;
-  }
-
-  private formatarData(timestamp: string | number): string {
-    return new Date(Number(timestamp)).toLocaleString('pt-BR', {
-      day: '2-digit',
-      month: '2-digit',
-      year: 'numeric',
-      hour: '2-digit',
-      minute: '2-digit',
-      second: '2-digit',
-      hour12: false
-    });
+      </div>`
+      ;
   }
 }

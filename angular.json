@@ -36,7 +36,7 @@
               "src/theme/variables.scss",
               "node_modules/leaflet/dist/leaflet.css"
             ],
-            "scripts": ["node_modules/leaflet-rotatedmarker/leaflet.rotatedMarker.js"]
+            "scripts": []
           },
           "configurations": {
             "production": {
@@ -120,7 +120,7 @@
               "src/theme/variables.scss",
               "node_modules/leaflet/dist/leaflet.css"
             ],
-            "scripts": ["node_modules/leaflet-rotatedmarker/leaflet.rotatedMarker.js"]
+            "scripts": [""]
           },
           "configurations": {
             "ci": {
