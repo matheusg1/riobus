@@ -1,0 +1,10 @@
+/build/*
+!/build/.npmkeep
+
+# Capacitor Android
+android/.gradle/
+android/build/
+android/local.properties
+android/captures/
+android/.idea/
+*.iml
